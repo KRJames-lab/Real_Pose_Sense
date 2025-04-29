@@ -2,4 +2,4 @@
 /build/
 /trt/
 
-/higher_hrnet.onnx
+/onnx/

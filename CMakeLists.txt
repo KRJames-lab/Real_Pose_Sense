@@ -57,6 +57,7 @@ set(SOURCES
     utils/FPSCounter.cpp
     utils/KeyboardHandler.cpp
     utils/ImageSaver.cpp
+    utils/Visualizer.cpp
     PoseEstimator.cpp
 )
 

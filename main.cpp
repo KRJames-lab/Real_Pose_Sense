@@ -11,6 +11,7 @@
 #include "utils/ImageSaver.h"
 #include "utils/KeyboardHandler.h"
 #include "PoseEstimator.h"
+#include "utils/Visualizer.h"
 
 // 소스 디렉토리 경로 얻기
 std::string getSourceDirectory() {
@@ -64,9 +65,8 @@ int main(int argc, char *argv[]) try
     // 키보드 핸들러 초기화
     Utils::KeyboardHandler keyboard;
     
-    // 시각화 창 생성 - Pose Estimation과 Enhanced Depth 창만 유지
-    cv::namedWindow("Pose Estimation", cv::WINDOW_AUTOSIZE);
-    cv::namedWindow("Enhanced Depth", cv::WINDOW_AUTOSIZE);
+    // 시각화 창 생성 - Visualizer 사용
+    Utils::Visualizer::initializeWindows();
     
     std::cout << "'s'를 눌러서 저장하고, 'q'를 눌러서 종료하세요." << std::endl;
     
@@ -105,31 +105,10 @@ int main(int argc, char *argv[]) try
         bool success = poseEstimator.detect(colorImage, keypoints);
         
         // 포즈 추정 결과 시각화
-        cv::Mat poseImage = colorImage.clone();
-        if (success && !keypoints.empty()) {
-            PoseEstimator::drawKeypoints(poseImage, keypoints);
-        }
+        cv::Mat& poseImage = colorImage;
         
-        // 중앙에 십자선 그리기 - 공통 함수 사용
-        DepthProcessor::drawCrosshair(poseImage, 5, cv::Scalar(0, 255, 0));
-        
-        // FPS 정보 추가
-        std::stringstream fpsSs;
-        fpsSs << "FPS: " << std::fixed << std::setprecision(1) << fps;
-        cv::putText(poseImage, fpsSs.str(), cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
-        
-        // 거리 정보 추가
-        std::stringstream distSs;
-        distSs << "Distance: " << std::fixed << std::setprecision(2) << centerDist << "m";
-        cv::putText(poseImage, distSs.str(), cv::Point(10, 40), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
-        
-        // 컨트롤 정보 추가 - Pose Estimation에만 표시
-        cv::putText(poseImage, "s: Save, q: Quit", cv::Point(10, poseImage.rows - 10), 
-                   cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 0), 1);
-        
-        // Pose Estimation과 Enhanced Depth 창 표시
-        cv::imshow("Pose Estimation", poseImage);
-        cv::imshow("Enhanced Depth", enhancedDepth);
+        // Visualizer를 사용하여 결과 그리기 및 표시
+        Utils::Visualizer::drawResults(poseImage, enhancedDepth, keypoints, fps, centerDist, config);
         
         // 키 입력 대기 (1ms)
         keyboard.waitKey(1);
@@ -141,7 +120,7 @@ int main(int argc, char *argv[]) try
         }
     }
     
-    cv::destroyAllWindows();
+    Utils::Visualizer::destroyWindows();
     
     return EXIT_SUCCESS; 
 }
