@@ -32,6 +32,18 @@ struct AppConfig {
     struct {
         std::string directory;
     } save;
+
+    struct PoseConfig {
+        std::string model_path; // .trt 모델 파일 경로
+        bool use_cuda; // CUDA 사용 여부
+        float confidence_threshold;
+        int input_width;
+        int input_height;
+        int heatmap_width;
+        int heatmap_height;
+        std::vector<float> mean; // [R, G, B] 순서
+        std::vector<float> std;  // [R, G, B] 순서
+    } pose;
 };
 
 class ConfigManager {

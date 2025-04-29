@@ -2,6 +2,7 @@
 #include <fstream>
 #include <cuda_runtime_api.h>
 #include <iostream>
+#include <opencv2/dnn.hpp>
 
 // Logger 구현
 void Logger::log(Severity severity, const char* msg) noexcept {
@@ -47,10 +48,23 @@ const std::vector<std::pair<int, int>> skeleton = {
     {14, 16}  // 오른쪽 무릎 - 오른쪽 발목
 };
 
-PoseEstimator::PoseEstimator(const std::string& modelPath) 
-    : inputH(512), inputW(512), numKeypoints(17), batchSize(1) {
-    if (!loadEngine(modelPath)) {
-        std::cerr << "TensorRT 엔진 로드 실패: " << modelPath << std::endl;
+PoseEstimator::PoseEstimator(const AppConfig& config) 
+    : config_(config), 
+      inputH(config.pose.input_height), 
+      inputW(config.pose.input_width), 
+      numKeypoints(17), // COCO 모델 기준, 필요 시 설정 가능
+      batchSize(1),
+      initialized_(false) // 초기화 플래그 false로 시작
+{
+    // CUDA 사용 여부 확인
+    if (!config_.pose.use_cuda) {
+        std::cerr << "[오류] PoseEstimator: config.yaml에서 use_cuda가 false로 설정되었습니다. TensorRT 모델은 CUDA가 필요합니다." << std::endl;
+        return; // 초기화 실패
+    }
+
+    // 모델 로드 시 config에서 경로 사용
+    if (!loadEngine(config_.pose.model_path)) {
+        std::cerr << "TensorRT 엔진 로드 실패: " << config_.pose.model_path << std::endl;
         return;
     }
     
@@ -90,9 +104,17 @@ PoseEstimator::PoseEstimator(const std::string& modelPath)
         }
         cudaMalloc(&buffers[i], size * sizeof(float));
     }
+    
+    // 호스트 버퍼 할당
+    inputBufferHost = new float[batchSize * 3 * inputH * inputW];
+    outputBufferHost = new float[batchSize * outputSize];
+    
+    initialized_ = true; // 모든 초기화 성공
 }
 
 PoseEstimator::~PoseEstimator() {
+    if (!initialized_) return; // 초기화 실패 시 메모리 해제 건너뛰기
+    
     // 모든 바인딩에 대해 메모리 해제
     int numBindings = engine ? engine->getNbBindings() : 0;
     for (int i = 0; i < numBindings; i++) {
@@ -101,6 +123,10 @@ PoseEstimator::~PoseEstimator() {
             buffers[i] = nullptr;
         }
     }
+    
+    // 호스트 버퍼 해제
+    delete[] inputBufferHost;
+    delete[] outputBufferHost;
     
     // 명시적으로 순서대로 소멸 (컨텍스트 -> 엔진 -> 런타임)
     context.reset();
@@ -150,94 +176,96 @@ bool PoseEstimator::loadEngine(const std::string& enginePath) {
 }
 
 bool PoseEstimator::detect(const cv::Mat& image, std::vector<std::vector<cv::Point>>& keypoints) {
-    if (!engine || !context) {
+    if (!initialized_) { // 초기화 확인 추가
+        std::cerr << "[오류] PoseEstimator가 제대로 초기화되지 않았습니다." << std::endl;
+        return false;
+    }
+    
+    if (!engine || !context) { // 기존 엔진/컨텍스트 확인 유지
         std::cerr << "TensorRT 엔진이 초기화되지 않았습니다." << std::endl;
         return false;
     }
     
-    // 입력 버퍼 할당
-    float* inputBuffer = new float[batchSize * 3 * inputH * inputW];
+    // 이미지 전처리 (멤버 변수 사용)
+    preprocess(image, inputBufferHost);
     
-    // 이미지 전처리
-    preprocess(image, inputBuffer);
-    
-    // 입력 데이터 GPU로 복사
-    cudaMemcpy(buffers[inputIndex], inputBuffer, batchSize * 3 * inputH * inputW * sizeof(float), cudaMemcpyHostToDevice);
+    // 입력 데이터 GPU로 복사 (멤버 변수 사용)
+    cudaMemcpy(buffers[inputIndex], inputBufferHost, batchSize * 3 * inputH * inputW * sizeof(float), cudaMemcpyHostToDevice);
     
     // 추론 실행
     context->executeV2(buffers);
     
-    // 출력 데이터 CPU로 복사
-    float* outputBuffer = new float[batchSize * outputSize];
-    cudaMemcpy(outputBuffer, buffers[outputIndex], batchSize * outputSize * sizeof(float), cudaMemcpyDeviceToHost);
+    // 출력 데이터 CPU로 복사 - 제거됨 (멤버 변수 사용)
+    cudaMemcpy(outputBufferHost, buffers[outputIndex], batchSize * outputSize * sizeof(float), cudaMemcpyDeviceToHost);
     
-    // 후처리를 통해 키포인트 추출
-    postprocess(outputBuffer, image.size(), keypoints);
-    
-    // 메모리 해제
-    delete[] inputBuffer;
-    delete[] outputBuffer;
+    // 후처리를 통해 키포인트 추출 (멤버 변수 사용)
+    postprocess(outputBufferHost, image.size(), keypoints);
     
     return true;
 }
 
 void PoseEstimator::preprocess(const cv::Mat& image, float* inputBuffer) {
-    // 입력 이미지 리사이즈 - 모델 입력 크기 512x512에 맞춤
-    cv::Mat resized;
-    cv::resize(image, resized, cv::Size(inputW, inputH));
+    // cv::dnn::blobFromImage를 사용하여 전처리
+    // 설정에서 mean, std 값 가져오기
+    cv::Scalar mean(config_.pose.mean[0], config_.pose.mean[1], config_.pose.mean[2]);
+    cv::Scalar std(config_.pose.std[0], config_.pose.std[1], config_.pose.std[2]);
+
+    // 주의: blobFromImage는 BGR 순서로 처리. config.yaml의 주석과 코드 확인 필요
+    // 현재 mean, std는 RGB 순서로 가정하고 로드했으므로, BGR 순서로 변경하여 사용
+    cv::Scalar meanBGR(mean[2], mean[1], mean[0]);
+
+    // inputW, inputH는 멤버 변수 사용
+    cv::Mat blob = cv::dnn::blobFromImage(image, 1.0/255.0, cv::Size(inputW, inputH), meanBGR, true, false);
     
-    // 이미지 정규화 (0-255 -> 0-1)
-    cv::Mat normalized;
-    resized.convertTo(normalized, CV_32FC3, 1.0/255.0);
-    
-    // 평균, 표준편차로 정규화
-    cv::Scalar mean(0.485, 0.456, 0.406);
-    cv::Scalar std(0.229, 0.224, 0.225);
-    
-    // HWC -> CHW 형식으로 변환 및 버퍼에 복사
+    // std도 BGR 순서에 맞게 사용
+    cv::Scalar stdBGR(std[2], std[1], std[0]); 
+
     int channelLength = inputH * inputW;
-    for (int c = 0; c < 3; c++) {
-        for (int h = 0; h < inputH; h++) {
-            for (int w = 0; w < inputW; w++) {
-                float pixel = normalized.at<cv::Vec3f>(h, w)[c];
-                inputBuffer[c * channelLength + h * inputW + w] = (pixel - mean[c]) / std[c];
-            }
+
+    // blob 데이터를 inputBufferHost로 복사하며 표준편차 적용 (split/memcpy 대체)
+    for(int c = 0; c < 3; ++c) { // c=0: Blue, c=1: Green, c=2: Red
+        float* srcPtr = blob.ptr<float>(0, c); // NCHW 형식의 blob에서 채널 포인터 가져오기
+        float* dstPtr = inputBuffer + c * channelLength;
+        float stdVal = (float)stdBGR[c]; // 해당 채널의 표준편차
+
+        // 0으로 나누기 방지
+        if (std::abs(stdVal) < 1e-6) {
+            stdVal = 1.0f; // 표준편차가 0에 가까우면 나누지 않음 (또는 에러 처리)
+             std::cerr << "[Warning Preprocess] Standard deviation for channel " << c << " is close to zero." << std::endl;
+        }
+
+        for (int i = 0; i < channelLength; ++i) {
+            dstPtr[i] = srcPtr[i] / stdVal;
         }
     }
 }
 
 void PoseEstimator::postprocess(float* outputBuffer, const cv::Size& originalSize, std::vector<std::vector<cv::Point>>& keypoints) {
-    // 모델 출력에서 히트맵 추출하여 각 키포인트의 위치 결정
     keypoints.clear();
     keypoints.resize(1); // 한 명의 사람만 가정
     keypoints[0].resize(numKeypoints);
     
-    // 출력 형식에 따라 구현 (Higher-HRNet 모델의 경우 출력 크기가 다름)
-    int heatmapH = 128; // onnx::Concat_2957의 경우 128x128
-    int heatmapW = 128;
-    
+    // 설정에서 히트맵 크기 가져오기
+    int heatmapH = config_.pose.heatmap_height;
+    int heatmapW = config_.pose.heatmap_width;
+    int heatmapSize = heatmapH * heatmapW;
+
     for (int k = 0; k < numKeypoints; k++) {
-        // 히트맵에서 최대값 찾기
-        float maxVal = -1;
-        int maxH = -1, maxW = -1;
+        // 현재 키포인트(채널)의 히트맵 데이터에 대한 Mat 헤더 생성 (복사 없음)
+        cv::Mat heatmap(heatmapH, heatmapW, CV_32FC1, outputBuffer + k * heatmapSize);
         
-        for (int h = 0; h < heatmapH; h++) {
-            for (int w = 0; w < heatmapW; w++) {
-                int idx = k * heatmapH * heatmapW + h * heatmapW + w;
-                if (outputBuffer[idx] > maxVal) {
-                    maxVal = outputBuffer[idx];
-                    maxH = h;
-                    maxW = w;
-                }
-            }
-        }
+        // 히트맵에서 최대값과 위치 찾기
+        double maxValDouble;
+        cv::Point maxLoc;
+        cv::minMaxLoc(heatmap, nullptr, &maxValDouble, nullptr, &maxLoc);
+        float maxVal = static_cast<float>(maxValDouble);
         
         // 원본 이미지 크기로 스케일링
-        float x = static_cast<float>(maxW) / heatmapW * originalSize.width;
-        float y = static_cast<float>(maxH) / heatmapH * originalSize.height;
+        float x = static_cast<float>(maxLoc.x) / heatmapW * originalSize.width;
+        float y = static_cast<float>(maxLoc.y) / heatmapH * originalSize.height;
         
-        // 신뢰도가 임계값보다 높으면 키포인트 추가
-        if (maxVal > 0.3) {
+        // 신뢰도가 임계값보다 높으면 키포인트 추가 (설정값 사용)
+        if (maxVal > config_.pose.confidence_threshold) {
             keypoints[0][k] = cv::Point(static_cast<int>(x), static_cast<int>(y));
         } else {
             keypoints[0][k] = cv::Point(-1, -1); // 신뢰도가 낮은 키포인트는 무효화

@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include "ConfigManager.h" // AppConfig 사용 위해 추가
 
 // Logger 클래스 정의 (NvInfer의 ILogger 구현)
 class Logger : public nvinfer1::ILogger {
@@ -25,8 +26,8 @@ struct TRTDestroy {
 // 포즈 추정 클래스
 class PoseEstimator {
 public:
-    // 생성자: TensorRT 모델 경로를 받아 초기화
-    PoseEstimator(const std::string& modelPath);
+    // 생성자: AppConfig를 받아 초기화
+    PoseEstimator(const AppConfig& config);
     ~PoseEstimator();
 
     // 이미지에서 포즈 추정 실행
@@ -42,6 +43,9 @@ private:
     std::unique_ptr<nvinfer1::ICudaEngine, TRTDestroy> engine;
     std::unique_ptr<nvinfer1::IExecutionContext, TRTDestroy> context;
     
+    const AppConfig& config_; // 설정 객체 참조
+    bool initialized_; // 초기화 성공 여부 플래그
+    
     // 모델 관련 변수
     int inputH;
     int inputW;
@@ -53,6 +57,10 @@ private:
     void* buffers[3];
     int inputIndex;
     int outputIndex;
+    
+    // 호스트 메모리 버퍼 (CPU)
+    float* inputBufferHost;
+    float* outputBufferHost;
     
     // 전처리 함수: OpenCV Mat을 TensorRT 입력 형식으로 변환
     void preprocess(const cv::Mat& image, float* inputBuffer);

@@ -27,17 +27,6 @@ cv::Mat DepthProcessor::enhancedDepthVisualization(const rs2::depth_frame& depth
     ss << std::fixed << std::setprecision(2) << minDepth << "m ~ " << maxDepth << "m";
     cv::putText(colormap, ss.str(), cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
     
-    // 중앙 지점의 거리 정보 계산 (calculateCenterDistance 함수 사용)
-    float centerDist = calculateCenterDistance(depthFrame, maxDepth);
-    
-    // 중앙에 십자선 그리기
-    drawCrosshair(colormap, 10, cv::Scalar(255, 255, 255));
-    
-    // 중앙 거리 정보 표시
-    std::stringstream centerSs;
-    centerSs << std::fixed << std::setprecision(2) << "Distance: " << centerDist << "m";
-    cv::putText(colormap, centerSs.str(), cv::Point(10, 40), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-    
     return colormap;
 }
 
@@ -81,31 +70,49 @@ float DepthProcessor::calculateCenterDistance(const rs2::depth_frame& depthFrame
 }
 
 cv::Mat DepthProcessor::directConversion(const rs2::depth_frame& depthFrame, float minDepth, float maxDepth) {
-    // 깊이 프레임에서 데이터 가져오기
     int width = depthFrame.get_width();
     int height = depthFrame.get_height();
     
-    // 32비트 float -> 8비트 변환 방식
+    // 깊이 프레임 데이터를 float 타입의 Mat으로 복사 (get_distance 사용 유지)
     cv::Mat depthFloat(height, width, CV_32FC1);
-
     for (int y = 0; y < height; y++) {
+        float* rowPtr = depthFloat.ptr<float>(y);
         for (int x = 0; x < width; x++) {
-            float depthValue = depthFrame.get_distance(x, y);
-            
-            if (depthValue < minDepth || depthValue > maxDepth || depthValue <= 0) {
-                depthFloat.at<float>(y, x) = 0.0f;
-            } else {
-                depthFloat.at<float>(y, x) = depthValue;
-            }
+            rowPtr[x] = depthFrame.get_distance(x, y);
         }
     }
+
+    // 유효 범위를 벗어나는 픽셀 마스크 생성 (minDepth <= depth <= maxDepth, depth > 0)
+    cv::Mat validMask;
+    cv::inRange(depthFloat, cv::Scalar(minDepth), cv::Scalar(maxDepth), validMask);
+    
+    // 0 이하인 픽셀 마스크 생성
+    cv::Mat positiveMask;
+    cv::compare(depthFloat, 0.0f, positiveMask, cv::CMP_GT);
+
+    // 두 마스크 결합 (유효 범위이면서 양수인 픽셀)
+    validMask &= positiveMask;
+
+    // 유효하지 않은 픽셀을 0으로 설정
+    cv::Mat maskedDepth;
+    depthFloat.copyTo(maskedDepth, validMask); // 유효한 값만 복사, 나머지는 0
     
     // 깊이 값 정규화 (min_depth ~ max_depth -> 0.0 ~ 1.0)
-    cv::Mat normalizedDepth;
-    cv::subtract(depthFloat, minDepth, normalizedDepth);
-    cv::divide(normalizedDepth, (maxDepth - minDepth), normalizedDepth);
+    cv::Mat normalizedDepth = cv::Mat::zeros(height, width, CV_32FC1); // 0으로 초기화
+    float range = maxDepth - minDepth;
     
-    // 정규화된 float 이미지를 8비트로 직접 변환 (0.0~1.0 -> 0~255)
+    // 0으로 나누는 경우 방지
+    if (range > 1e-6) {
+        cv::Mat temp = cv::Mat::zeros(height, width, CV_32FC1);
+        // 유효 픽셀에 대해 (depth - minDepth) 계산
+        cv::subtract(depthFloat, minDepth, temp, validMask);
+        // 전체 temp 행렬에 대해 range로 나누기 (유효하지 않은 영역은 0/range = 0)
+        cv::divide(temp, range, temp);
+        // 마스크를 사용해 유효한 결과만 normalizedDepth에 복사
+        temp.copyTo(normalizedDepth, validMask);
+    }
+
+    // 정규화된 float 이미지를 8비트로 변환 (0.0~1.0 -> 0~255)
     cv::Mat depth8bit;
     normalizedDepth.convertTo(depth8bit, CV_8UC1, 255.0);
     
@@ -113,30 +120,49 @@ cv::Mat DepthProcessor::directConversion(const rs2::depth_frame& depthFrame, flo
 }
 
 cv::Mat DepthProcessor::stepByStepConversion(const rs2::depth_frame& depthFrame, float minDepth, float maxDepth) {
-    // 깊이 프레임에서 데이터 가져오기
     int width = depthFrame.get_width();
     int height = depthFrame.get_height();
-    
-    // 32비트 float -> 16비트 -> 8비트 변환
-    cv::Mat depthImage(height, width, CV_16UC1);
-    
-    // 깊이 데이터를 16비트(0-65535) 범위로 정규화
-    for (int y = 0; y < height; y++) {
+
+    // 깊이 프레임 데이터를 float 타입의 Mat으로 복사 (get_distance 사용 유지)
+    cv::Mat depthFloat(height, width, CV_32FC1);
+     for (int y = 0; y < height; y++) {
+        float* rowPtr = depthFloat.ptr<float>(y);
         for (int x = 0; x < width; x++) {
-            float depthValue = depthFrame.get_distance(x, y);
-            
-            if (depthValue < minDepth || depthValue > maxDepth || depthValue <= 0) {
-                depthImage.at<ushort>(y, x) = 0;
-            } else {
-                // 깊이값을 0-65535 범위로 변환 (16비트)
-                depthImage.at<ushort>(y, x) = static_cast<ushort>((depthValue - minDepth) / (maxDepth - minDepth) * 65535);
-            }
+            rowPtr[x] = depthFrame.get_distance(x, y);
         }
     }
+
+    // 유효 범위를 벗어나는 픽셀 마스크 생성 (minDepth <= depth <= maxDepth, depth > 0)
+    cv::Mat validMask;
+    cv::inRange(depthFloat, cv::Scalar(minDepth), cv::Scalar(maxDepth), validMask);
     
+    // 0 이하인 픽셀 마스크 생성
+    cv::Mat positiveMask;
+    cv::compare(depthFloat, 0.0f, positiveMask, cv::CMP_GT);
+
+    // 두 마스크 결합 (유효 범위이면서 양수인 픽셀)
+    validMask &= positiveMask;
+
+    // 깊이 데이터를 16비트(0-65535) 범위로 정규화 (유효 픽셀 대상)
+    cv::Mat depth16bit = cv::Mat::zeros(height, width, CV_16UC1); // 0으로 초기화
+    float range = maxDepth - minDepth; // range 변수 추가
+
+    // 0으로 나누는 경우 방지
+    if (range > 1e-6) {
+        float scale = 65535.0f / range;
+        cv::Mat temp = cv::Mat::zeros(height, width, CV_32FC1);
+        // 유효 픽셀에 대해 (depth - minDepth) 계산
+        cv::subtract(depthFloat, minDepth, temp, validMask);
+        // 전체 temp 행렬에 대해 스케일링 및 타입 변환
+        cv::Mat temp16bit;
+        temp.convertTo(temp16bit, CV_16UC1, scale);
+        // 마스크를 사용해 유효한 결과만 depth16bit에 복사
+        temp16bit.copyTo(depth16bit, validMask);
+    }
+
     // 16비트에서 8비트로 변환
     cv::Mat depth8bit;
-    depthImage.convertTo(depth8bit, CV_8UC1, 1.0/256.0);
+    depth16bit.convertTo(depth8bit, CV_8UC1, 1.0/256.0);
     
     return depth8bit;
 }

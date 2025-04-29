@@ -28,6 +28,24 @@ bool ConfigManager::loadConfig(const std::string& config_file, AppConfig& config
 
         fs["save"]["directory"] >> config.save.directory;
         
+        // Pose 설정 로드
+        fs["pose"]["model_path"] >> config.pose.model_path;
+        fs["pose"]["use_cuda"] >> config.pose.use_cuda;
+        fs["pose"]["confidence_threshold"] >> config.pose.confidence_threshold;
+        fs["pose"]["input_width"] >> config.pose.input_width;
+        fs["pose"]["input_height"] >> config.pose.input_height;
+        fs["pose"]["heatmap_width"] >> config.pose.heatmap_width;
+        fs["pose"]["heatmap_height"] >> config.pose.heatmap_height;
+        // 벡터 읽기
+        cv::FileNode meanNode = fs["pose"]["preprocess"]["mean"];
+        if (meanNode.isSeq()) {
+            meanNode >> config.pose.mean;
+        }
+        cv::FileNode stdNode = fs["pose"]["preprocess"]["std"];
+        if (stdNode.isSeq()) {
+            stdNode >> config.pose.std;
+        }
+
         fs.release();
         return true;
     }
@@ -57,6 +75,17 @@ void ConfigManager::setDefaultConfig(AppConfig& config) {
     config.depth_range.max = 1.0f;
     
     config.save.directory = "./results/";
+    
+    // Pose 기본 설정
+    config.pose.model_path = "./trt/higher_hrnet.trt"; // 기본 경로
+    config.pose.use_cuda = true; // 기본값은 CUDA 사용
+    config.pose.confidence_threshold = 0.3f;
+    config.pose.input_width = 512;
+    config.pose.input_height = 512;
+    config.pose.heatmap_width = 128;
+    config.pose.heatmap_height = 128;
+    config.pose.mean = {0.485f, 0.456f, 0.406f};
+    config.pose.std = {0.229f, 0.224f, 0.225f};
 }
 
 void ConfigManager::printConfig(const AppConfig& config) {
@@ -81,5 +110,16 @@ void ConfigManager::printConfig(const AppConfig& config) {
     std::cout << "[저장 설정]" << std::endl;
     std::cout << "  - 저장 디렉토리: " << config.save.directory << std::endl;
     
+    std::cout << "[포즈 추정 설정]" << std::endl;
+    std::cout << "  - 모델 경로: " << config.pose.model_path << std::endl;
+    std::cout << "  - CUDA 사용: " << (config.pose.use_cuda ? "True" : "False") << std::endl;
+    std::cout << "  - 신뢰도 임계값: " << config.pose.confidence_threshold << std::endl;
+    std::cout << "  - 입력 크기: " << config.pose.input_width << "x" << config.pose.input_height << std::endl;
+    std::cout << "  - 히트맵 크기: " << config.pose.heatmap_width << "x" << config.pose.heatmap_height << std::endl;
+    std::cout << "  - 정규화 평균 (RGB): [" 
+              << config.pose.mean[0] << ", " << config.pose.mean[1] << ", " << config.pose.mean[2] << "]" << std::endl;
+    std::cout << "  - 정규화 표준편차 (RGB): [" 
+              << config.pose.std[0] << ", " << config.pose.std[1] << ", " << config.pose.std[2] << "]" << std::endl;
+
     std::cout << "======================" << std::endl;
 } 

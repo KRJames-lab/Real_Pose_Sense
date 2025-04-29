@@ -39,10 +39,8 @@ int main(int argc, char *argv[]) try
     // 설정 정보 출력
     ConfigManager::printConfig(config);
     
-    // TensorRT 포즈 추정 모델 로드
-    std::string modelPath = sourceDir + "/trt/higher_hrnet.trt";
-    std::cout << "포즈 추정 모델 로드: " << modelPath << std::endl;
-    PoseEstimator poseEstimator(modelPath);
+    // TensorRT 포즈 추정 모델 로드 (Config에서 경로 사용)
+    PoseEstimator poseEstimator(config);
     
     // 이미지 저장기 초기화
     Utils::ImageSaver imageSaver(config.save.directory);

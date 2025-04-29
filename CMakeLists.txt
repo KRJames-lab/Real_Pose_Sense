@@ -70,4 +70,10 @@ target_link_libraries(${PROJECT_NAME}
     ${CUDA_LIBRARIES}
     ${NVINFER_LIBRARY}
     ${CUDART_LIBRARY}
-) 
+)
+
+# ONNX Runtime 헤더 경로 포함
+target_include_directories(${PROJECT_NAME} PRIVATE ${onnxruntime_INCLUDE_DIRS})
+
+# ONNX Runtime 라이브러리 링크
+target_link_libraries(${PROJECT_NAME} PRIVATE ${onnxruntime_LIBRARIES}) 
